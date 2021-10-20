@@ -1,13 +1,13 @@
 extern crate regex;
-extern crate reqwest;
 extern crate select;
+extern crate ureq;
 
+use anyhow::Context;
+use anyhow::Result;
 use regex::Regex;
 use select::document::Document;
 use select::predicate::Attr;
 use std::{env, fs, io};
-use anyhow::Result;
-use anyhow::Context;
 
 struct ImageItem {
     data_id: String,
@@ -19,16 +19,17 @@ fn main() -> Result<()> {
     //get the url from command line arguments
     let input_url = env::args().nth(1).context("Please specify a valid url.")?;
     //get base url. This does nothing for now but will eventually extract the correct url from the different variations
-    let base_url = get_base_url(input_url);
+    let base_url = get_base_url(input_url)?;
 
     //get parseable document from the given base_url
     let html_document = get_html_from_url(&base_url)?;
     //get the total number of pages of wallpapeprs
-    let total_pages = find_total_pages(&html_document).context("Could not parse page count as integer")?;
+    let total_pages =
+        find_total_pages(&html_document).context("Could not parse page count as integer")?;
 
     for page in 1..=total_pages {
         let page_url = format!("{}&page={}", base_url, page);
-        
+
         //we currently skip a page if there is an error.
         let current_page = match get_html_from_url(&page_url) {
             Ok(item) => item,
@@ -38,7 +39,13 @@ fn main() -> Result<()> {
             }
         };
         for item in get_all_page_items(&current_page) {
-            get_image(&item);
+            match get_image(&item) {
+                Ok(()) => (),
+                Err(e) => {
+                    eprintln!("Skipped an image due to error: {:?}", e);
+                    continue;
+                }
+            };
         }
     }
 
@@ -46,12 +53,22 @@ fn main() -> Result<()> {
 }
 
 fn get_html_from_url(url: &str) -> Result<Document> {
-    Ok(Document::from_read(reqwest::blocking::get(url)?)?)
+    Ok(Document::from_read(ureq::get(url).call()?.into_reader())?)
 }
 
 fn find_total_pages(html: &Document) -> Result<u32> {
-    let html_span = html.find(Attr("class", "btn btn-info btn-lg")).next().context("Unable to parse the page count (html error). Cannot continue.")?.text();
-    let page_count = Regex::new(r"/(?P<cnt>\d+)").unwrap().captures(&html_span).context("Unable to parse the page count (regex failure)")?.name("cnt").context("Unable to parse the page count (regex failure)")?.as_str();
+    let html_span = html
+        .find(Attr("class", "btn btn-info btn-lg"))
+        .next()
+        .context("Unable to parse the page count (html error). Cannot continue.")?
+        .text();
+    let page_count = Regex::new(r"/(?P<cnt>\d+)")
+        .unwrap()
+        .captures(&html_span)
+        .context("Unable to parse the page count (regex failure)")?
+        .name("cnt")
+        .context("Unable to parse the page count (regex failure)")?
+        .as_str();
     Ok(page_count.parse::<u32>()?)
 }
 
@@ -76,25 +93,26 @@ fn get_all_page_items(html: &Document) -> Vec<ImageItem> {
     result
 }
 
-fn get_image(item: &ImageItem) {
-    let image_download_url = format!("https://initiate.alphacoders.com/download/wallpaper/{}/{}/{}", &item.data_id, &item.data_server, &item.data_type);
+fn get_image(item: &ImageItem) -> Result<()> {
+    let image_download_url = format!(
+        "https://initiate.alphacoders.com/download/wallpaper/{}/{}/{}",
+        &item.data_id, &item.data_server, &item.data_type
+    );
     let image_output_filename = format!("{}.{}", &item.data_id, &item.data_type);
     println!("Downloading image to {}", image_output_filename);
-    //TODO how do we propagate these errors upwards so we only have to skip this particular item if there's an error?
-    let mut w_resp = match reqwest::blocking::get(image_download_url) {
-        Ok(image) => image,
-        Err(e) => panic!("Unable to download image url {:?}", e),
-    };
-    let mut outfile = match fs::File::create(image_output_filename) {
-        Ok(fd) => fd,
-        Err(e) => panic!("Could not open output file {:?}", e),
-    };
-    io::copy(&mut w_resp, &mut outfile).expect("Failed to write image content into file.");
+    let mut outfile = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(image_output_filename)?;
+    let mut web_response = ureq::get(&image_download_url).call()?.into_reader();
+    io::copy(&mut web_response, &mut outfile)
+        .context("Failed to write image content into file.")?;
+    Ok(())
 }
 
-fn get_base_url(url: String) -> String {
+fn get_base_url(url: String) -> Result<String> {
     // TODO: parse other types of input urls correctly:
-    url
+    Ok(url)
 }
 
 //TODO: mkdir for the title of the album and download into there
