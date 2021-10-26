@@ -4,10 +4,11 @@ extern crate ureq;
 
 use anyhow::Context;
 use anyhow::Result;
+use argh::FromArgs;
 use regex::Regex;
 use select::document::Document;
 use select::predicate::Attr;
-use std::{env, fs, io};
+use std::{fs, io, path::Path};
 
 struct ImageItem {
     data_id: String,
@@ -15,17 +16,32 @@ struct ImageItem {
     data_server: String,
 }
 
+//Argument parser
+#[derive(FromArgs)]
+#[argh(
+    description = "Downloads the Alphacoders gallery provided by the given url. Currently only supports \"desktop wallpapers\" category."
+)]
+struct ParsedArgs {
+    #[argh(positional)]
+    url: String,
+}
+
 fn main() -> Result<()> {
-    //get the url from command line arguments
-    let input_url = env::args().nth(1).context("Please specify a valid url.")?;
+    //parse the arguments
+    let parsed_args: ParsedArgs = argh::from_env();
     //get base url. This does nothing for now but will eventually extract the correct url from the different variations
-    let base_url = get_base_url(input_url)?;
+    let base_url = get_base_url(parsed_args.url)?;
 
     //get parseable document from the given base_url
     let html_document = get_html_from_url(&base_url)?;
     //get the total number of pages of wallpapeprs
     let total_pages =
         find_total_pages(&html_document).context("Could not parse page count as integer")?;
+
+    //create the output directory if it doesn't exist.
+    let album_title = get_album_title(&html_document)?;
+    let output_dir = Path::new(&album_title);
+    fs::create_dir_all(output_dir)?;
 
     for page in 1..=total_pages {
         let page_url = format!("{}&page={}", base_url, page);
@@ -39,7 +55,7 @@ fn main() -> Result<()> {
             }
         };
         for item in get_all_page_items(&current_page) {
-            match get_image(&item) {
+            match get_image(&item, &output_dir) {
                 Ok(()) => (),
                 Err(e) => {
                     eprintln!("Skipped an image due to error: {:?}", e);
@@ -93,17 +109,23 @@ fn get_all_page_items(html: &Document) -> Vec<ImageItem> {
     result
 }
 
-fn get_image(item: &ImageItem) -> Result<()> {
+fn get_image(item: &ImageItem, output_dir: &Path) -> Result<()> {
     let image_download_url = format!(
         "https://initiate.alphacoders.com/download/wallpaper/{}/{}/{}",
         &item.data_id, &item.data_server, &item.data_type
     );
-    let image_output_filename = format!("{}.{}", &item.data_id, &item.data_type);
-    println!("Downloading image to {}", image_output_filename);
+
+    let image_output_filename =
+        output_dir.join(Path::new(&format!("{}.{}", &item.data_id, &item.data_type)));
+    println!(
+        "Downloading image to {}",
+        image_output_filename.to_string_lossy()
+    );
     let mut outfile = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(image_output_filename)?;
+
     let mut web_response = ureq::get(&image_download_url).call()?.into_reader();
     io::copy(&mut web_response, &mut outfile)
         .context("Failed to write image content into file.")?;
@@ -111,9 +133,19 @@ fn get_image(item: &ImageItem) -> Result<()> {
 }
 
 fn get_base_url(url: String) -> Result<String> {
-    // TODO: parse other types of input urls correctly:
+    // Deals with a potentially missing "?" so that we can append &page to the url.
+    if !Regex::new(r"\?").unwrap().is_match(&url) {
+        return Ok(url + "?");
+    }
     Ok(url)
 }
 
-//TODO: mkdir for the title of the album and download into there
-//fn get_title
+fn get_album_title(html: &Document) -> Result<String> {
+    Ok(html
+        .find(Attr("class", "title"))
+        .nth(0)
+        .context("Could not determine the title of the album")?
+        .text()
+        .trim()
+        .to_string())
+}
