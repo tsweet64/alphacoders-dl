@@ -18,10 +18,9 @@ struct ImageItem {
 
 //Argument parser
 #[derive(FromArgs)]
-#[argh(
-    description = "Downloads the Alphacoders gallery provided by the given url. Currently only supports \"desktop wallpapers\" category."
-)]
+/// Downloads the Alphacoders gallery provided by the given url. Currently only supports "desktop wallpapers" category.
 struct ParsedArgs {
+    /// the input url
     #[argh(positional)]
     url: String,
 }
@@ -134,7 +133,7 @@ fn get_image(item: &ImageItem, output_dir: &Path) -> Result<()> {
 
 fn get_base_url(url: String) -> Result<String> {
     // Deals with a potentially missing "?" so that we can append &page to the url.
-    if !Regex::new(r"\?").unwrap().is_match(&url) {
+    if !url.contains('?') {
         return Ok(url + "?");
     }
     Ok(url)
